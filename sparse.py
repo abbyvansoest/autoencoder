@@ -1,26 +1,21 @@
 import tensorflow as tf
 import numpy as np 
 import random
-
-BATCH_SIZE = 256
-TEST_SIZE = 4
+from . import common
 
 class SparseAutoencoder:
 
-    def __init__(self, num_input, reduce_dim=5, norm=[]):
+    def __init__(self, num_input, reduce_dim=5, normalize=False):
         self.data = []
         self.test_data = []
-        
-        learning_rate = 0.01
-        self.num_steps = 500000
-        self.display_step = 1000
+        self.normalize = normalize
         
         self.beta = 3
         self.rho = 0.05
         
-        num_hidden_1 = num_input
-        num_hidden_2 = num_input
-        self.reduce_dim = num_input
+        num_hidden_1 = 16
+        num_hidden_2 = 8
+        self.reduce_dim = reduce_dim
         self.num_input = num_input
         
         self.X = tf.placeholder('float', [None, self.num_input])
@@ -71,15 +66,19 @@ class SparseAutoencoder:
 
         # Sparse autoencoding loss.
         self.loss = tf.reduce_mean(tf.pow(y_true - y_pred, 2)) + self.beta * tf.reduce_sum(kl)
-        self.optimizer = tf.train.AdadeltaOptimizer(learning_rate).minimize(self.loss)
+        self.optimizer = tf.train.AdadeltaOptimizer(common.learning_rate).minimize(self.loss)
         self.sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
 
     def set_data(self, data):
         # TODO: normalize
+        if self.normalize:
+            data = common.normalize_obs(data)
         self.data = data
         
     def set_test_data(self, test_data):
         # TODO: normalize
+        if self.normalize:
+            test_data = common.normalize_obs(test_data)
         self.test_data = test_data
 
     def train(self):
@@ -87,25 +86,17 @@ class SparseAutoencoder:
         self.sess.run(tf.global_variables_initializer())
 
         print(len(self.data))
-        for i in range(1, self.num_steps + 1):
-            batch = random.sample(self.data, BATCH_SIZE)
+        for i in range(1, common.num_steps + 1):
+            batch = random.sample(self.data, common.BATCH_SIZE)
             _, l = self.sess.run([self.optimizer, self.loss], feed_dict={self.X: batch})
-            if i % self.display_step == 0 or i == 1:
+            if i % common.display_step == 0 or i == 1:
                 print('Step %i: Minibatch Loss: %f' % (i, l))
 
         print('--------')
         print(len(self.test_data))
         for i in range(4):
-            test_batch = random.sample(self.test_data, TEST_SIZE)
-            g = self.sess.run(self.decoder_op, feed_dict={self.X: test_batch})
-            for j in range(TEST_SIZE):
-                print(np.linalg.norm(test_batch[j] - g[j]))
+            test_batch = random.sample(self.test_data, common.TEST_SIZE)
+            pred = self.sess.run(self.decoder_op, feed_dict={self.X: test_batch})
+            common.log_test(test_batch, pred)
     
-    def normalize(self, obs, norm=[]):    
-        if len(norm) == 0:
-            return obs
-        if not condition:
-            raise AssertionError("observation and norm not of same dimensions")
-        norm_obs = [obs[i]/norm[i] for i in range(len(obs))]
-        return norm_obs
 
