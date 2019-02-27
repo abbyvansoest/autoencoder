@@ -21,10 +21,18 @@ import autoencoder.common as common
     # activation function - relu, elu, tanh, sigmoid?
     
 activation = tf.nn.selu
+def kl_divergence(rho, rho_hat):
+    rho_hat = tf.cond(rho_hat <= 0, lambda: 1e-8, lambda: rho_hat)
+    return rho * tf.log(rho) - rho * tf.log(rho_hat) + (1 - rho) * tf.log(1 - rho) - (1 - rho) * tf.log(1 - rho_hat)
 
 class CustomAutoencoder():
 
-    def __init__(self, num_input, reduce_dim=5, num_hid1=64, num_hid2=32, normalize=False):
+    def __init__(self, num_input, reduce_dim=5, num_hid1=64, num_hid2=32, 
+                 normalize=False, printfn=print):
+        
+        tf.reset_default_graph()
+        
+        self.print = printfn
         
         self.graph = tf.Graph()
         with self.graph.as_default():
@@ -34,11 +42,15 @@ class CustomAutoencoder():
             self.normalize = normalize
 
             self.lam = 1e-4
+            self.beta = 3
+            self.rho = 0.05
 
             self.num_input = num_input
             self.num_hid1 = num_hid1
             self.num_hid2 = num_hid2
             self.reduce_dim = reduce_dim
+            
+            self.sess = tf.Session(config=tf.ConfigProto(log_device_placement=False)) 
 
             self.X1 = tf.placeholder('float', [None, self.num_input])
             self.X2 = tf.placeholder('float', [None, self.num_hid1])
@@ -59,11 +71,9 @@ class CustomAutoencoder():
             self.decoding_2 = tf.layers.dense(self.Xhat2, self.num_hid1, name='dec_fullc2', activation=activation)
             self.decoding_3 = tf.layers.dense(self.Xhat3, self.num_input, name='dec_fullc3', activation=activation)
 
-            self.loss1, self.opt1 = self.loss_fn(self.X1, self.decoding_3)
-            self.loss2, self.opt2 = self.loss_fn(self.X2, self.decoding_2)
-            self.loss3, self.opt3 = self.loss_fn(self.X3, self.decoding_1)
-
-            self.sess = tf.Session(config=tf.ConfigProto(log_device_placement=False)) 
+            self.loss1, self.opt1 = self.loss_fn(self.X1, self.Xhat3, self.decoding_3)
+            self.loss2, self.opt2 = self.loss_fn(self.X2, self.Xhat2, self.decoding_2)
+            self.loss3, self.opt3 = self.loss_fn(self.X3, self.Xhat1, self.decoding_1)
     
     def noise(self, size, sd=1.0):
         if self.normalize:
@@ -72,12 +82,20 @@ class CustomAutoencoder():
             sd = 0.0
         return np.random.normal(size=size, loc=0.0, scale=sd)
     
-    def loss_fn(self, y_true, y_pred):
-        loss = tf.reduce_mean(tf.pow(y_true - y_pred, 2))
+    def loss_fn(self, y_true, encoded, y_pred):
+        # TODO: get contractive part of loss
+        
+        # get sparse loss
+        kl = 0.0
+        eps = 1e-6
+        if common.sparse:
+            rho_hat = tf.reduce_mean(encoded) # WHAT IF THIS IS NEGATIVE? WHAT IF ITS 0
+            kl = kl_divergence(self.rho, rho_hat)
+        
+        loss = tf.reduce_mean(tf.pow(y_true - y_pred, 2)) + self.beta * tf.reduce_sum(kl)
         optimizer = tf.train.AdadeltaOptimizer(common.learning_rate).minimize(loss) 
         return loss, optimizer
 
-    # TODO: add noise in this function too?
     def build_global_net(self):
         with self.graph.as_default():
             
@@ -87,7 +105,7 @@ class CustomAutoencoder():
             with tf.variable_scope('', reuse=True):
                 e_weights1 = tf.get_variable("enc_fullc1/kernel").eval(self.sess) 
                 e_weights2 = tf.get_variable("enc_fullc2/kernel").eval(self.sess) 
-                e_weights3 = tf.get_variable("enc_fullc3/kernel").eval(self.sess) 
+                e_weights3 = tf.get_variable("enc_fullc3/kernel").eval(self.sess)
                 e_bias1 = tf.get_variable("enc_fullc1/bias").eval(self.sess) 
                 e_bias2 = tf.get_variable("enc_fullc2/bias").eval(self.sess) 
                 e_bias3 = tf.get_variable("enc_fullc3/bias").eval(self.sess) 
@@ -120,7 +138,7 @@ class CustomAutoencoder():
                                           kernel_initializer=tf.constant_initializer(d_weights3), 
                                           bias_initializer=tf.constant_initializer(d_bias3))
 
-            loss, optimizer = self.loss_fn(self.X, self.decoder)
+            loss, optimizer = self.loss_fn(self.X, self.encoder, self.decoder)
             self.sess.run(tf.global_variables_initializer())
             
         return loss, optimizer
@@ -133,62 +151,78 @@ class CustomAutoencoder():
         # train first level: mapping from input_dim -> 20 -> input_dim
         for i in range(1, common.num_steps + 1):
             
-            batch = random.sample(self.data, common.BATCH_SIZE)            
-            enc1 = self.sess.run(self.encoding_1, feed_dict={self.X1: batch, self.noise1: self.noise(batch_shape)}) 
+            batch = common.random_sample(self.data, common.BATCH_SIZE)            
+            enc1 = self.sess.run(self.encoding_1, feed_dict={self.X1: batch, self.noise1: self.noise(batch_shape)})             
             _, l = self.sess.run([self.opt1, self.loss1], feed_dict={self.X1: batch, self.Xhat3: enc1})
+                
             if i % common.display_step == 0 or i == 1:
-                print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('\t' + str(tf.reduce_mean(enc1).eval(session=self.sess)))
 
         # train second level: mapping from 20 -> 12 -> 20
         for i in range(1, common.num_steps + 1):
             
-            batch = random.sample(self.data, common.BATCH_SIZE)
+            batch = common.random_sample(self.data, common.BATCH_SIZE)
             enc1 = self.sess.run(self.encoding_1, feed_dict={self.X1: batch, self.noise1: np.zeros(batch_shape)})
             enc2 = self.sess.run(self.encoding_2, feed_dict={self.X2: enc1, self.noise2: self.noise(enc1.shape)})
             _, l = self.sess.run([self.opt2, self.loss2], feed_dict={self.X2: enc1, self.Xhat2: enc2})
+                
             if i % common.display_step == 0 or i == 1:
-                print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('\t' + str(tf.reduce_mean(enc2).eval(session=self.sess)))
 
         # train third level: mapping from 12 -> reduce_dim -> 12
         for i in range(1, common.num_steps + 1):
-            batch = random.sample(self.data, common.BATCH_SIZE)
+            batch = common.random_sample(self.data, common.BATCH_SIZE)
 
             enc1 = self.sess.run(self.encoding_1, feed_dict={self.X1: batch, self.noise1: np.zeros(batch_shape)})
             enc2 = self.sess.run(self.encoding_2, feed_dict={self.X2: enc1, self.noise2: np.zeros(enc1.shape)})
             enc3 = self.sess.run(self.encoding_3, feed_dict={self.X3: enc2, self.noise3: self.noise(enc2.shape)})
-
-            _, l = self.sess.run([self.opt3, self.loss3], feed_dict={self.X3: enc2, 
-                                                                     self.Xhat1: enc3})
+            
+            _, l = self.sess.run([self.opt3, self.loss3], feed_dict={self.X3: enc2, self.Xhat1: enc3})
+            
             if i % common.display_step == 0 or i == 1:
-                print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('Step %i: Minibatch Loss: %f' % (i, l))
+                self.print('\t' + str(tf.reduce_mean(enc3).eval(session=self.sess)))
     
     def train(self, testiter=4):
         with self.graph.as_default():
             self.sess.run(tf.global_variables_initializer())
             self.pretrain()
             
-            batch_shape = (common.BATCH_SIZE,len(self.data[0]))
+            batch_shape = (common.BATCH_SIZE, len(self.data[0]))
 
             # inititalize and train complete architecture
             loss, optimizer = self.build_global_net()
-            steps = 2*common.num_steps
+            steps = 3*common.num_steps
             for i in range(1, steps + 1):
-                batch = random.sample(self.data, common.BATCH_SIZE)
-                _, l = self.sess.run([optimizer, loss], feed_dict={self.X: batch, self.Xnoise: self.noise(batch_shape, sd=0.50)})
+                batch = common.random_sample(self.data, common.BATCH_SIZE)
+                encoding = self.sess.run(self.encoder, feed_dict={self.X: batch, self.Xnoise: np.zeros(batch_shape)})
+                _, l = self.sess.run([optimizer, loss], 
+                                     feed_dict={self.X: batch, self.Xnoise: self.noise(batch_shape, sd=0.50)})
 
                 if i % common.display_step == 0 or i == 1:
-                    print('Step %i: Minibatch Loss: %f' % (i, l))
+                    self.print('Step %i: Minibatch Loss: %f' % (i, l))
+                    self.print('\t' + str(tf.reduce_mean(encoding).eval(session=self.sess)))
         
         self.test(testiter)
                     
     def test(self, iterations):
         test_batch_shape = (common.TEST_SIZE,len(self.test_data[0]))
-        print("----- Testing -----")
+        self.print("----- Testing -----")
         with self.graph.as_default():
             for i in range(iterations):
-                test_batch = random.sample(self.test_data, common.TEST_SIZE)
+                test_batch = common.random_sample(self.test_data, common.TEST_SIZE)
                 pred = self.sess.run(self.decoder, feed_dict={self.X: test_batch, self.Xnoise: np.zeros(test_batch_shape)})
-                common.log_test(test_batch, pred)
+                common.log_test(test_batch, pred, self.print)
+    
+    # NOTE: you must call train() before you try to encode something.
+    # Errors otherwise.
+    def encode(self, x):
+        x = np.array(x).reshape(1,29)
+        encoded = self.sess.run(self.encoder, 
+                                feed_dict={self.X: x, self.Xnoise: np.zeros(x.shape)})
+        return encoded
     
     # TODO: test and train normalizations should use the same factors....
     def set_data(self, data):
@@ -200,22 +234,3 @@ class CustomAutoencoder():
         if self.normalize:
             test_data = common.normalize_obs(test_data)
         self.test_data = test_data
-    
-    def log_weights(self):
-        with self.graph.as_default():
-            
-            with tf.variable_scope('', reuse=True):
-                e_weights1 = tf.get_variable("net1/kernel").eval(self.sess) 
-                e_weights2 = tf.get_variable("net2/kernel").eval(self.sess) 
-                e_weights3 = tf.get_variable("net3/kernel").eval(self.sess) 
-                d_weights1 = tf.get_variable("net4/kernel").eval(self.sess) 
-                d_weights2 = tf.get_variable("net5/kernel").eval(self.sess) 
-                d_weights3 = tf.get_variable("net6/kernel").eval(self.sess) 
-                
-                e_bias1 = tf.get_variable("net1/bias").eval(self.sess) 
-                e_bias2 = tf.get_variable("net2/bias").eval(self.sess) 
-                e_bias3 = tf.get_variable("net3/bias").eval(self.sess) 
-                d_bias1 = tf.get_variable("net4/bias").eval(self.sess) 
-                d_bias2 = tf.get_variable("net5/bias").eval(self.sess) 
-                d_bias3 = tf.get_variable("net6/bias").eval(self.sess)
-        

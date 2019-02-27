@@ -1,14 +1,20 @@
 import scipy
+import numpy as np
+import random
 
-log = True
-noisy = False
+log = True # log test data
+noisy = False # learn with noisy input
+sparse = True # use sparse loss constraint
 
 BATCH_SIZE = 256
 TEST_SIZE = 4
 
 learning_rate = 0.01
-num_steps = 100000
+num_steps = 75000
 display_step = 1000
+
+def random_sample(data, size):
+    return random.sample(data, size)
 
 # normalize data to the [0,1] range
 def normalize_obs(data): 
@@ -20,11 +26,11 @@ def normalize_obs(data):
             obs[i] /= max_i_val
     return data
 
-def log_test(test, pred):
+def log_test(test, pred, printfn=print):
     print("-----")
     if not log:
         return    
     for j in range(len(pred)):
-        print("eucl: " + str(scipy.spatial.distance.euclidean(pred[j], test[j])))
-        print("mse: " + str(((pred[j] - test[j]) ** 2).mean()))
-    print("GLOBAL MSE: " + str(((pred - test) ** 2).mean()))
+        printfn("eucl: " + str(np.sqrt(((pred[j] - test[j]) ** 2).sum())))
+        printfn("mse: " + str(((pred[j] - test[j]) ** 2).mean()))
+    printfn("GLOBAL MSE: " + str(((pred - test) ** 2).mean()))
