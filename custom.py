@@ -204,18 +204,22 @@ class CustomAutoencoder():
                 if i % common.display_step == 0 or i == 1:
                     self.print('Step %i: Minibatch Loss: %f' % (i, l))
                     self.print('\t' + str(tf.reduce_mean(encoding).eval(session=self.sess)))
-        
-        self.test(testiter)
                     
-    def test(self, iterations):
-        test_batch_shape = (common.TEST_SIZE,len(self.test_data[0]))
-        self.print("----- Testing -----")
+    def test(self, iterations=4):
+        test_batch_shape = (common.TEST_SIZE, len(self.test_data[0]))
+        max_seen = np.ones(self.reduce_dim)
         with self.graph.as_default():
             for i in range(iterations):
                 test_batch = common.random_sample(self.test_data, common.TEST_SIZE)
+                pred_encoded = self.sess.run(self.encoder, feed_dict={self.X: test_batch, self.Xnoise: np.zeros(test_batch_shape)})
                 pred = self.sess.run(self.decoder, feed_dict={self.X: test_batch, self.Xnoise: np.zeros(test_batch_shape)})
                 common.log_test(test_batch, pred, self.print)
-    
+                
+                for predicted in pred_encoded:
+                    max_seen = np.maximum(max_seen, predicted)
+       
+        return max_seen
+                
     # NOTE: you must call train() before you try to encode something.
     # Errors otherwise.
     def encode(self, x):

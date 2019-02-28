@@ -4,13 +4,13 @@ import random
 
 log = True # log test data
 noisy = False # learn with noisy input
-sparse = True # use sparse loss constraint
+sparse = False # use sparse loss constraint
 
 BATCH_SIZE = 256
 TEST_SIZE = 4
 
 learning_rate = 0.01
-num_steps = 75000
+num_steps = 100000
 display_step = 1000
 
 def random_sample(data, size):
